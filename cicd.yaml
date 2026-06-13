@@ -1,0 +1,222 @@
+# ============================================================
+# CI/CD PIPELINE FOR DOCKERIZED FLASK APP
+# TRIGGERS ON: push to main, pull request to main
+# JOBS:
+#   1. build-and-test     → install deps, run pytest
+#   2. build-and-publish  → build docker image, push to dockerhub
+# ============================================================
+
+
+# DEFINE THE NAME OF THE CI/CD PIPELINE
+# this name appears on GitHub Actions dashboard
+name: CI/CD FOR DOCKERIZED FLASK APP
+
+
+# ============================================================
+# TRIGGERS
+# defines WHEN this workflow should run
+# ============================================================
+on:
+
+  # TRIGGER 1 → runs when code is pushed directly to main branch
+  # example: git push origin main
+  push:
+    branches: [ main ]
+
+  # TRIGGER 2 → runs when a pull request is opened targeting main
+  # example: developer opens PR from feature/priya → main
+  pull_request:
+    branches: [ main ]
+
+
+# ============================================================
+# JOBS
+# defines WHAT to run and in WHAT ORDER
+# ============================================================
+jobs:
+
+  # ============================================================
+  # JOB 1 → BUILD AND TEST
+  # purpose  : verify the code works correctly before publishing
+  # runs on  : fresh ubuntu machine (GitHub provides this)
+  # needs    : nothing → runs immediately when triggered
+  # ============================================================
+  build-and-test:
+
+    # ubuntu-latest is a fresh virtual machine provided by GitHub
+    # it comes with these pre-installed:
+    # ├── Docker      ✅
+    # ├── Git         ✅
+    # ├── Python      ✅
+    # ├── Node.js     ✅
+    # ├── Java        ✅
+    # ├── AWS CLI     ✅
+    # └── kubectl     ✅
+    runs-on: ubuntu-latest
+
+    steps:
+
+      # STEP 1 → CHECKOUT CODE
+      # downloads your repository code onto the fresh ubuntu machine
+      # without this step the machine has NO idea what your code looks like
+      # uses premade action from → github.com/actions/checkout
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+
+      # STEP 2 → SET UP PYTHON
+      # installs python 3.9 on the fresh ubuntu machine
+      # even though python is pre-installed, this ensures
+      # we use EXACTLY the version we want (3.9)
+      # uses premade action from → github.com/actions/setup-python
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'    # pin exact python version
+
+
+      # STEP 3 → INSTALL DEPENDENCIES
+      # installs all packages needed to run and test the flask app
+      # WHY INSTALL HERE?
+      # → every job gets a FRESH machine
+      # → fresh machine has nothing installed
+      # → we must install everything from scratch
+      # WHY NOT IN build-and-publish?
+      # → build-and-publish only runs docker commands
+      # → docker commands dont need python packages on the machine
+      # → dependencies are installed INSIDE the docker image via Dockerfile
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip    # upgrade pip to latest version
+          pip install flask                      # install flask web framework
+          pip install pytest                     # install pytest testing tool
+
+
+      # STEP 4 → RUN TESTS
+      # pytest automatically finds all files starting with test_
+      # and runs every function starting with test_
+      # example test files:
+      # ├── tests/test_app.py
+      # ├── tests/test_model.py
+      # └── tests/test_preprocessing.py
+      # IF ANY TEST FAILS:
+      # → this job fails
+      # → build-and-publish is BLOCKED (because needs: build-and-test)
+      # → broken code never reaches DockerHub ✅
+      # IF ALL TESTS PASS:
+      # → this job succeeds
+      # → build-and-publish is ALLOWED to run
+      - name: Run tests
+        run: |
+          pytest
+
+
+  # ============================================================
+  # JOB 2 → BUILD AND PUBLISH
+  # purpose  : build docker image and push to DockerHub
+  # runs on  : fresh ubuntu machine (different from job 1's machine)
+  # needs    : build-and-test must pass first
+  # ============================================================
+  build-and-publish:
+
+    # NEEDS → this is the gate
+    # build-and-publish will ONLY run if build-and-test passes
+    # if build-and-test fails → this job is BLOCKED
+    # this ensures broken code never reaches DockerHub
+    needs: build-and-test
+
+    # another fresh ubuntu machine
+    # completely separate from job 1's machine
+    # whatever was installed in job 1 is NOT available here
+    # that is why we checkout code again in step 1 below
+    runs-on: ubuntu-latest
+
+    steps:
+
+      # STEP 1 → CHECKOUT CODE AGAIN
+      # even though we checked out code in job 1
+      # this is a COMPLETELY DIFFERENT machine
+      # job 1's machine was deleted after job 1 finished
+      # so we must checkout code again on this new machine
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+
+      # STEP 2 → SET UP DOCKER BUILDX
+      # Docker is ALREADY pre-installed on ubuntu-latest
+      # BUT Buildx is NOT pre-installed
+      # Buildx is an advanced plugin ON TOP of Docker that provides:
+      # ├── multi platform builds (linux/amd64, linux/arm64 etc)
+      # ├── advanced layer caching (faster builds)
+      # └── REQUIRED by docker/build-push-action (next step)
+      # WITHOUT this step → build-push-action will CRASH
+      # uses premade action from → github.com/docker/setup-buildx-action
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+
+
+      # STEP 3 → LOGIN TO DOCKERHUB
+      # logs into DockerHub so we can push our image
+      # credentials are stored in GitHub Secrets (never hardcoded)
+      # to set secrets:
+      # → GitHub repo → Settings → Secrets and Variables → Actions
+      # → New secret → DOCKER_USERNAME = your dockerhub username
+      # → New secret → DOCKER_PASSWORD = your dockerhub password
+      # ${{ secrets.DOCKER_USERNAME }} → GitHub automatically injects this value
+      # ${{ secrets.DOCKER_PASSWORD }} → never visible in logs, GitHub masks it
+      # uses premade action from → github.com/docker/login-action
+      - name: Login to DockerHub
+        uses: docker/login-action@v2
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}    # injected from GitHub Secrets
+          password: ${{ secrets.DOCKER_PASSWORD }}    # injected from GitHub Secrets
+
+
+      # STEP 4 → BUILD AND PUSH DOCKER IMAGE
+      # this is the most important step in this job
+      # it does TWO things:
+      # 1. BUILD → reads Dockerfile and creates a docker image
+      # 2. PUSH  → uploads that image to DockerHub
+      #
+      # with: parameters explained:
+      # context: .
+      #   → which folder Docker can see during build
+      #   → . means entire project root directory
+      #   → Docker can access app.py, requirements.txt etc
+      #
+      # file: ./DockerFile
+      #   → which file has the build instructions
+      #   → NOTE: Linux is case sensitive
+      #   → DockerFile ≠ Dockerfile (capital F vs lowercase f)
+      #   → must specify explicitly because our file has capital F
+      #
+      # push: true
+      #   → true  = build AND upload to DockerHub
+      #   → false = only build, do NOT upload anywhere
+      #
+      # tags: username/imagename:version
+      #   → name of the image on DockerHub
+      #   → format: dockerhub-username/image-name:tag
+      #   → :latest means most recent version
+      #   → full name example: priya123/flasktest-app:latest
+      #   → anyone can pull with: docker pull priya123/flasktest-app:latest
+      #
+      # uses premade action from → github.com/docker/build-push-action
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v4
+        with:
+          context: .                                              # use entire project folder
+          file: ./DockerFile                                      # use this dockerfile
+          push: true                                             # upload to DockerHub
+          tags: ${{ secrets.DOCKER_USERNAME }}/flasktest-app:latest  # image name on DockerHub
+
+
+      # STEP 5 → PRINT IMAGE DIGEST
+      # digest is a unique fingerprint (hash) of the built image
+      # example: sha256:abc123def456...
+      # useful for:
+      # ├── verifying correct image was pushed
+      # ├── security auditing
+      # └── referencing exact image version later
+      - name: Image digest
+        run: echo ${{ steps.build-and-publish.outputs.digest }}
