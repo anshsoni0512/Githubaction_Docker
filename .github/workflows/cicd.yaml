@@ -206,7 +206,7 @@ jobs:
         uses: docker/build-push-action@v4
         with:
           context: .                                              # use entire project folder
-          file: ./DockerFile                                      # use this dockerfile
+          file: ./Dockerfile                                      # use this dockerfile
           push: true                                             # upload to DockerHub
           tags: ${{ secrets.DOCKER_USERNAME }}/flasktest-app:latest  # image name on DockerHub
 
